@@ -1,18 +1,20 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import os
+import numpy as np
 
-# --- 1. CONFIGURAZIONE ELITE ---
-st.set_page_config(
-    page_title="Robin Hood Sociale | Puglia",
-    page_icon="🏹",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- CONFIGURAZIONE ELITE ---
+st.set_page_config(page_title="Robin Hood Sociale | Puglia", page_icon="💎", layout="wide")
 
-# --- COORDINATE STATICHE (Per la Mappa Strategica) ---
-# Per evitare geocoding lento, mappiamo i comuni principali emersi dalla tua analisi
+# --- LINK DATI (IL CUORE DELL'AUTOMAZIONE) ---
+# 1. LINK DIRETTO REGIONE PUGLIA (Incolla qui quello copiato col tasto destro!)
+URL_SERVIZI_SOCIALI = "https://dati.puglia.it/ckan/dataset/98118aea-0ec5-40b8-a2c9-944619b9383f/resource/382c8bba-7faa-49c8-803f-678a6f74e75d/download/catalogo-offerta-servizi-disabili-e-anziani.csv"
+
+# 2. FILE LOCALE/GITHUB (Dati Mafia Blindati)
+# Questo file deve essere nella repository GitHub insieme al codice
+FILE_BENI_CONFISCATI = "totale__immobili-destinato.csv" 
+
+# --- COORDINATE STRATEGICHE (TARANTO PROVINCE) ---
 COORDINATE_COMUNI = {
     'LIZZANO': {'lat': 40.3906, 'lon': 17.4475},
     'GINOSA': {'lat': 40.5786, 'lon': 16.7561},
@@ -22,157 +24,118 @@ COORDINATE_COMUNI = {
     'SAN GIORGIO IONICO': {'lat': 40.4578, 'lon': 17.3789},
     'CASTELLANETA': {'lat': 40.6294, 'lon': 16.9381},
     'STATTE': {'lat': 40.5636, 'lon': 17.2047},
-    'CAROSINO': {'lat': 40.4689, 'lon': 17.3986},
-    'PULSANO': {'lat': 40.3833, 'lon': 17.3564},
     'MASSAFRA': {'lat': 40.5894, 'lon': 17.1128},
     'GROTTAGLIE': {'lat': 40.5333, 'lon': 17.4333},
-    'LATERZA': {'lat': 40.6283, 'lon': 16.8000},
-    'CRISPIANO': {'lat': 40.6053, 'lon': 17.2333},
-    'PALAGIANO': {'lat': 40.5769, 'lon': 17.0475},
-    'SAVA': {'lat': 40.4039, 'lon': 17.5583}
+    # Aggiungi altri se necessario...
 }
 
-# --- 2. CARICAMENTO DATI ---
-@st.cache_data
-def load_data():
-    # Percorso relativo per trovare il file nella cartella 'data'
-    file_path = os.path.join('data', 'RobinHood_Elite_Data.xlsx')
-    
-    if not os.path.exists(file_path):
-        st.error(f"❌ Errore: Non trovo il file '{file_path}'. Assicurati di aver eseguito lo script 'process_data.py'.")
-        return None
-    
-    df = pd.read_excel(file_path)
-    
-    # Aggiungiamo Lat/Lon ai comuni per la mappa
-    df['lat'] = df['Comune'].str.upper().map(lambda x: COORDINATE_COMUNI.get(x, {}).get('lat'))
-    df['lon'] = df['Comune'].str.upper().map(lambda x: COORDINATE_COMUNI.get(x, {}).get('lon'))
-    
-    return df
+@st.cache_data(ttl=3600) # Aggiorna la cache ogni ora (Automazione!)
+def load_and_process_data():
+    try:
+        # 1. Carica Servizi Sociali (LIVE dal Web)
+        df_sociali = pd.read_csv(URL_SERVIZI_SOCIALI, sep=None, engine='python', on_bad_lines='skip')
+        
+        # 2. Carica Beni Confiscati (DAL FILE SICURO)
+        df_beni = pd.read_csv(FILE_BENI_CONFISCATI, sep=None, engine='python', on_bad_lines='skip', encoding='utf-8')
+        
+        # --- ELABORAZIONE REAL-TIME (IL CERVELLONE) ---
+        
+        # Filtro Taranto e Standardizzazione
+        df_beni['Provincia'] = df_beni['Provincia'].astype(str).str.upper().str.strip()
+        df_taranto = df_beni[df_beni['Provincia'] == 'TARANTO'].copy()
+        
+        df_taranto['CITY_KEY'] = df_taranto['Comune'].astype(str).str.upper().str.strip()
+        df_sociali['CITY_KEY'] = df_sociali['COMUNE'].astype(str).str.upper().str.strip()
+        
+        # Incrocio Dati
+        risorse = df_taranto.groupby('CITY_KEY').size().reset_index(name='NUM_BENI')
+        bisogni = df_sociali.groupby('CITY_KEY').size().reset_index(name='NUM_SERVIZI')
+        
+        df_merge = pd.merge(risorse, bisogni, on='CITY_KEY', how='outer').fillna(0)
+        
+        # Calcolo Score Robin Hood
+        df_merge['SCORE'] = (df_merge['NUM_BENI'] * 10) / (df_merge['NUM_SERVIZI'] + 1)
+        df_merge['SCORE'] = df_merge['SCORE'].round(1)
+        
+        # Aggiungo coordinate manuali per la mappa
+        df_merge['lat'] = df_merge['CITY_KEY'].map(lambda x: COORDINATE_COMUNI.get(x, {}).get('lat'))
+        df_merge['lon'] = df_merge['CITY_KEY'].map(lambda x: COORDINATE_COMUNI.get(x, {}).get('lon'))
+        
+        # Dataset dettagliato per le tabelle
+        df_dettaglio = pd.merge(df_taranto, df_merge[['CITY_KEY', 'SCORE', 'NUM_SERVIZI']], on='CITY_KEY', how='left')
+        
+        return df_merge, df_dettaglio
 
-df_full = load_data()
+    except Exception as e:
+        st.error(f"⚠️ Errore critico nel caricamento dati: {e}")
+        return None, None
 
-# --- 3. SIDEBAR E INFO ---
-with st.sidebar:
-    st.title("🏹 Robin Hood Sociale")
-    st.markdown("""
-    **Missione:**
-    Trasformare i beni confiscati alle mafie in centri per l'inclusione sociale.
-    
-    **Algoritmo Elite:**
-    Incrocia il *Bisogno* (mancanza di servizi) con la *Risorsa* (immobili vuoti).
-    """)
-    st.divider()
-    st.info("💡 **Lo sapevi?** Lizzano ha un punteggio di opportunità critico.")
+# --- CARICAMENTO ---
+df_map_data, df_detail_data = load_and_process_data()
 
-# --- 4. MAIN DASHBOARD ---
-if df_full is not None:
-    st.title("🗺️ Mappa delle Opportunità Sociali")
-    st.markdown("Analisi strategica per la riqualificazione dei beni confiscati in provincia di Taranto.")
-    
-    # KPI GENERALI
-    col1, col2, col3 = st.columns(3)
-    tot_beni = len(df_full)
-    top_comune = df_full.sort_values('ROBIN_HOOD_SCORE', ascending=False).iloc[0]['Comune']
-    max_score = df_full['ROBIN_HOOD_SCORE'].max()
-    
-    col1.metric("🏠 Beni Confiscati Censiti", tot_beni)
-    col2.metric("🏆 Comune Prioritario", top_comune)
-    col3.metric("🔥 Opportunity Score Max", f"{max_score}")
+# --- INTERFACCIA DASHBOARD ---
+if df_detail_data is not None:
+    with st.sidebar:
+        st.title("💎 Robin Hood Sociale")
+        st.info("Sistema automatizzato di monitoraggio beni confiscati e welfare.")
+        st.markdown(f"**Stato Dati:**\n\n🟢 Welfare: ONLINE (Regione Puglia)\n🔒 Beni Confiscati: SECURE (ANBSC)")
+        st.divider()
+        st.write("Designed for Public Administration Excellence")
 
-    st.divider()
-
-    # --- SEZIONE 1: LA MAPPA A BOLLE ---
-    st.subheader("📍 Radar del Territorio")
+    st.title("🏛️ Cruscotto Strategico Provinciale")
     
-    # Creiamo un dataset raggruppato per la mappa
-    df_map = df_full.groupby('Comune').agg({
-        'ROBIN_HOOD_SCORE': 'max',
-        'NUM_SERVIZI': 'max',
-        'Comune': 'count', # Conta beni
-        'lat': 'max',
-        'lon': 'max'
-    }).rename(columns={'Comune': 'NUM_BENI'}).reset_index()
+    # KPI
+    best_city = df_map_data.sort_values('SCORE', ascending=False).iloc[0]
     
-    # Filtriamo solo quelli con coordinate
-    df_map = df_map.dropna(subset=['lat'])
-
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Patrimonio Confiscato (Immobili)", int(df_map_data['NUM_BENI'].sum()))
+    k2.metric("Comune con Maggiore Urgenza", best_city['CITY_KEY'], delta=f"Score: {best_city['SCORE']}")
+    k3.metric("Servizi Sociali Monitorati", int(df_map_data['NUM_SERVIZI'].sum()))
+    
+    st.markdown("---")
+    
+    # MAPPA
+    st.subheader("📍 Mappa delle Priorità d'Intervento")
+    st.markdown("*Le bolle più grandi e rosse indicano dove c'è abbondanza di immobili ma carenza di servizi.*")
+    
+    map_clean = df_map_data.dropna(subset=['lat'])
+    
     fig = px.scatter_mapbox(
-        df_map,
-        lat="lat",
-        lon="lon",
-        size="ROBIN_HOOD_SCORE", # La grandezza della bolla dipende dallo Score!
-        color="ROBIN_HOOD_SCORE",
-        hover_name="Comune",
+        map_clean, lat="lat", lon="lon", size="SCORE", color="SCORE",
+        hover_name="CITY_KEY",
         hover_data={"NUM_BENI": True, "NUM_SERVIZI": True, "lat": False, "lon": False},
-        color_continuous_scale="RdYlGn_r", # Rosso = Alto Score (Urgente), Verde = Basso
-        size_max=40,
-        zoom=9,
-        height=500
+        color_continuous_scale="RdYlGn_r", size_max=50, zoom=9, height=600
     )
     fig.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
     st.plotly_chart(fig, use_container_width=True)
-
-    # --- SEZIONE 2: ANALISI TATTICA ---
-    st.divider()
-    st.subheader("🔎 Ispezione Tattica")
     
-    lista_comuni = sorted(df_full['Comune'].unique())
-    selected_city = st.selectbox("Seleziona un Comune per analizzare i beni:", lista_comuni, index=lista_comuni.index('Lizzano') if 'Lizzano' in lista_comuni else 0)
+    # DETTAGLIO COMUNE
+    st.markdown("---")
+    st.subheader("🔎 Analisi di Dettaglio & Generazione Atti")
     
-    # Filtriamo i dati
-    dati_citta = df_full[df_full['Comune'] == selected_city]
-    score_citta = dati_citta.iloc[0]['ROBIN_HOOD_SCORE']
-    n_servizi = dati_citta.iloc[0]['NUM_SERVIZI']
+    sel_comune = st.selectbox("Seleziona Amministrazione Comunale:", sorted(df_detail_data['CITY_KEY'].unique()))
     
-    # Box Informativo
-    c1, c2 = st.columns([1, 2])
+    dati_comune = df_detail_data[df_detail_data['CITY_KEY'] == sel_comune]
+    
+    c1, c2 = st.columns([1, 1])
+    
     with c1:
-        if score_citta > 100:
-            st.error(f"### Score: {score_citta}\n🚨 **PRIORITÀ MASSIMA**")
-        elif score_citta > 50:
-            st.warning(f"### Score: {score_citta}\n⚠️ **ALTO POTENZIALE**")
-        else:
-            st.success(f"### Score: {score_citta}\n✅ **SITUAZIONE STABILE**")
+        st.dataframe(dati_comune[['Indirizzo', 'Tipologia', 'Categoria catastale']], use_container_width=True)
         
-        st.write(f"**Servizi Sociali Attivi:** {int(n_servizi)}")
-        st.write(f"**Beni Confiscati Disponibili:** {len(dati_citta)}")
-
     with c2:
-        st.info("👇 **Lista Immobili Disponibili:**")
-        st.dataframe(
-            dati_citta[['Indirizzo', 'Tipologia', 'Metri quadri/Consistenza', 'Categoria catastale']],
-            hide_index=True,
-            use_container_width=True
-        )
-
-    # --- SEZIONE 3: AZIONE (GENERATORE PEC) ---
-    st.divider()
-    st.subheader("✉️ Azione Civica: Genera Proposta")
-    
-    bene_scelto = st.selectbox("Per quale immobile vuoi proporre un progetto?", dati_citta['Indirizzo'].unique())
-    progetto_tipo = st.selectbox("Cosa vorresti realizzarci?", ["Centro Diurno Disabili", "Dopo di Noi (Autonomia)", "Centro Antiviolenza", "Co-working Sociale"])
-    
-    if st.button("📝 Genera Bozza PEC"):
-        bozza_pec = f"""
-        OGGETTO: Proposta di riutilizzo sociale bene confiscato sito in {selected_city}, {bene_scelto}
+        st.info("🤖 **Assistente Amministrativo**")
+        immobile = st.selectbox("Seleziona Immobile per Proposta:", dati_comune['Indirizzo'].unique())
         
-        Spett.le Sindaco del Comune di {selected_city},
-        
-        Con la presente, in qualità di cittadino attivo,
-        PREMESSO CHE
-        dal monitoraggio civico "Robin Hood" risulta che nel Vostro comune vi è una carenza di servizi sociali ({int(n_servizi)} attivi) a fronte di una disponibilità di beni confiscati;
-        
-        SI PROPONE
-        di valutare l'assegnazione dell'immobile sito in {bene_scelto} per la realizzazione di un "{progetto_tipo}".
-        
-        L'immobile risulta attualmente inutilizzato e potrebbe rispondere immediatamente ai bisogni della comunità.
-        
-        Cordiali Saluti,
-        [Firma]
-        """
-        st.text_area("Copia e Incolla questa mail:", bozza_pec, height=300)
-        st.success("Bozza generata! Copiala e inviala via PEC al Comune.")
+        if st.button("Genera Bozza Istanza"):
+            testo = f"""AL SIG. SINDACO DEL COMUNE DI {sel_comune}
+            OGGETTO: Istanza di riutilizzo sociale bene confiscato - {immobile}
+            
+            Il sottoscritto cittadino, preso atto della disponibilità del bene in oggetto
+            e rilevata la carenza di servizi nel monitoraggio regionale...
+            CHIEDE
+            l'assegnazione per finalità sociali ai sensi del Codice Antimafia.
+            """
+            st.text_area("Testo Proposta:", testo, height=200)
 
 else:
     st.stop()
